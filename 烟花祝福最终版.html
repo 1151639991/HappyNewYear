@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>烟花倒计时+自动燃放+渐变文字</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            overflow: hidden;
+            background-color: #000;
+            touch-action: none;
+            padding-top: env(safe-area-inset-top);
+            padding-bottom: env(safe-area-inset-bottom);
+            padding-left: env(safe-area-inset-left);
+            padding-right: env(safe-area-inset-right);
+        }
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="fireworkCanvas"></canvas>
+    <script>
+        // 获取画布和上下文
+        const canvas = document.getElementById('fireworkCanvas');
+        const ctx = canvas.getContext('2d');
+        const devicePixelRatio = window.devicePixelRatio || 1;
+        
+        // 画布尺寸适配（适配手机屏幕）
+        function resizeCanvas() {
+            canvas.width = window.innerWidth * devicePixelRatio;
+            canvas.height = window.innerHeight * devicePixelRatio;
+            ctx.scale(devicePixelRatio, devicePixelRatio);
+            canvas.style.width = `${window.innerWidth}px`;
+            canvas.style.height = `${window.innerHeight}px`;
+        }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        // 全局状态管理
+        const STATE = {
+            COUNTDOWN: 'countdown',   // 321倒计时阶段
+            AUTO_CLICK: 'autoClick',  // 自动点击燃放烟花阶段
+            FINAL_TEXT: 'finalText',  // 渐变文字显示阶段
+            BLACK_SCREEN: 'blackScreen' // 黑屏阶段（可触摸放烟花）
+        };
+        let currentState = STATE.COUNTDOWN;
+
+        // 倒计时相关变量
+        let countdownNumber = 3;
+        let countdownFrame = 0;
+        let countdownParticles = [];
+
+        // 自动点击相关变量
+        let autoClickCount = 0;
+        const AUTO_CLICK_TOTAL = 10; // 总烟花数（一次2个，共发射5次）
+        const textPool = ['新年快乐', '平安喜乐', '前程似锦','阖家幸福','梦想成真','顺顺利利','快乐幸福','愿你安好','身体健康','暴富暴美'];
+        let textPoolIndex = 0; // 仅用于自动阶段的顺序文字索引
+
+        // 最终文字相关变量
+        let finalTextParticles = [];
+        let finalTextFrame = 0;
+
+        // 粒子类（手机端优化尺寸和性能）
+        class Particle {
+            constructor(x, y, color, type = 'firework', targetX = x, targetY = y) {
+                this.x = x;
+                this.y = y;
+                this.color = color;
+                this.type = type;
+                this.isAlive = true;
+                
+                if (type === 'firework') {
+                    this.speed = Math.random() * 4 + 2; // 手机端降低速度
+                    this.angle = Math.random() * Math.PI * 2;
+                    this.vx = Math.cos(this.angle) * this.speed;
+                    this.vy = Math.sin(this.angle) * this.speed;
+                    this.gravity = 0.07; // 轻微降低重力
+                    this.alpha = 1;
+                    this.decay = Math.random() * 0.01 + 0.005;
+                    this.size = Math.random() * 1.5 + 0.8; // 手机端粒子更小
+                } else {
+                    this.vx = (Math.random() - 0.5) * 2.5; // 降低初始速度
+                    this.vy = (Math.random() - 0.5) * 2.5;
+                    this.alpha = 0;
+                    this.targetX = targetX;
+                    this.targetY = targetY;
+                    this.gravity = 0.008;
+                    this.decay = 0.004;
+                    this.life = 180; // 适配手机的生命周期
+                    this.size = 0.6; // 手机端文字粒子更小
+                }
+            }
+            
+            update() {
+                if (!this.isAlive) return;
+                
+                if (this.type === 'firework') {
+                    this.vy += this.gravity;
+                    this.x += this.vx;
+                    this.y += this.vy;
+                    this.alpha -= this.decay;
+                    this.vx *= 0.97;
+                    this.vy *= 0.97;
+                    
+                    if (this.alpha <= 0) {
+                        this.isAlive = false;
+                    }
+                } else {
+                    const dx = this.targetX - this.x;
+                    const dy = this.targetY - this.y;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (dist > 0.5) {
+                        this.vx += dx * 0.025; // 降低吸引力，更流畅
+                        this.vy += dy * 0.025;
+                    }
+                    
+                    this.vx *= 0.88;
+                    this.vy *= 0.88;
+                    this.vy += this.gravity;
+                    
+                    this.x += this.vx;
+                    this.y += this.vy;
+                    
+                    if (this.alpha < 1 && this.life > 120) {
+                        this.alpha += 0.02;
+                    }
+                    
+                    this.life--;
+                    if (this.life < 180) {
+                        this.alpha = Math.max(0, this.life / 180);
+                    }
+                    
+                    if (this.life <= 0 || this.alpha <= 0) {
+                        this.isAlive = false;
+                    }
+                }
+            }
+            
+            draw() {
+                if (!this.isAlive || this.alpha <= 0) return;
+                
+                ctx.save();
+                ctx.globalAlpha = this.alpha;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+        
+        // 烟花弹类（手机端优化速度和粒子数量）
+        class FireworkShell {
+            constructor(targetX, targetY, color, id) {
+                this.id = id;
+                this.x = targetX;
+                this.y = window.innerHeight;
+                this.targetX = targetX;
+                this.targetY = Math.max(40, targetY); // 适配手机高度
+                this.color = color;
+                this.speed = 8; // 手机端降低烟花弹速度
+                this.speedDecay = 0.998;
+                this.hasExploded = false;
+                this.explodeFrame = 0;
+                this.textGenerated = false;
+                this.textParticles = [];
+                this.text = '';
+                this.trailParticles = [];
+            }
+            
+            update() {
+                if (this.hasExploded) {
+                    this.explodeFrame++;
+                    if (this.explodeFrame === 15 && !this.textGenerated) {
+                        this.textGenerated = true;
+                        return 'generateText';
+                    }
+                    return false;
+                }
+                
+                if (Math.random() > 0.6) { // 减少拖影粒子数量
+                    this.trailParticles.push(new Particle(
+                        this.x, this.y, this.color, 'firework'
+                    ));
+                }
+                this.trailParticles = this.trailParticles.filter(p => {
+                    p.update();
+                    p.draw();
+                    return p.isAlive;
+                });
+                
+                const distance = this.y - this.targetY;
+                if (distance < this.speed / 2) {
+                    this.hasExploded = true;
+                    return 'explode';
+                }
+                
+                this.y -= this.speed;
+                this.speed *= this.speedDecay;
+                
+                ctx.save();
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, 3, 0, Math.PI * 2); // 缩小烟花弹尺寸
+                ctx.fillStyle = this.color;
+                ctx.fill();
+                ctx.restore();
+                
+                return false;
+            }
+            
+            generateFireworkParticles() {
+                const particles = [];
+                // 手机端大幅减少粒子数量，降低性能消耗
+                const particleCount = Math.floor(Math.random() * 40) + 80;
+                
+                for (let i = 0; i < particleCount; i++) {
+                    particles.push(new Particle(this.x, this.y, this.color, 'firework'));
+                }
+                
+                return particles;
+            }
+            
+            generateTextParticles(text) {
+                this.textParticles = [];
+                const fontSize = Math.min(36, window.innerWidth / 7); // 适配手机字体大小
+                ctx.font = `bold ${fontSize}px Microsoft YaHei, sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                
+                const textMetrics = ctx.measureText(text);
+                const textWidth = textMetrics.width + 50;
+                const textHeight = fontSize + 30;
+                
+                const tempCanvas = document.createElement('canvas');
+                const tempCtx = tempCanvas.getContext('2d');
+                tempCanvas.width = textWidth * devicePixelRatio;
+                tempCanvas.height = textHeight * devicePixelRatio;
+                tempCtx.scale(devicePixelRatio, devicePixelRatio);
+                
+                tempCtx.font = `bold ${fontSize}px Microsoft YaHei, sans-serif`;
+                tempCtx.textAlign = 'center';
+                tempCtx.textBaseline = 'middle';
+                tempCtx.fillStyle = '#ffffff';
+                tempCtx.fillText(text, textWidth / 2, textHeight / 2);
+                
+                const imageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+                const pixels = imageData.data;
+                
+                // 手机端加大步长，减少文字粒子数量
+                for (let row = 0; row < tempCanvas.height; row += 3) {
+                    for (let col = 0; col < tempCanvas.width; col += 3) {
+                        const index = (row * tempCanvas.width + col) * 4;
+                        const alpha = pixels[index + 3];
+                        
+                        if (alpha > 100) {
+                            const px = this.x - textWidth / 2 + col / devicePixelRatio;
+                            const py = this.y - textHeight / 2 + row / devicePixelRatio;
+                            
+                            this.textParticles.push(new Particle(
+                                this.x + (Math.random() - 0.5) * 60, // 缩小初始扩散范围
+                                this.y + (Math.random() - 0.5) * 60,
+                                this.color,
+                                'text',
+                                px,
+                                py
+                            ));
+                        }
+                    }
+                }
+                
+                return this.textParticles;
+            }
+        }
+        
+        // 烟花管理器
+        const FireworkManager = {
+            shells: [],
+            particles: [],
+            nextId: 1,
+            
+            // 单个添加烟花（指定文字）
+            addFirework(targetX, targetY, text) {
+                const colors = ['#ff3366', '#ff9933', '#ffff66', '#33ff66', 
+                '#3399ff', '#9933ff', '#ff33cc','lightpink', 'skyblue', 
+                'lightgreen', 'lavender', 'coral', 'bisque','mistyrose','oldlace'];
+                const color = colors[Math.floor(Math.random() * colors.length)];
+                const shell = new FireworkShell(targetX, targetY, color, this.nextId);
+                this.nextId++;
+                shell.text = text; // 强制使用指定文字
+                this.shells.push(shell);
+                return shell;
+            },
+            
+            // 一次添加两个随机位置的烟花（自动阶段专用：按顺序取两个不同文字）
+            addTwoRandomFireworks() {
+                // 生成第一个烟花的随机位置（避开边缘）
+                const x1 = Math.random() * (window.innerWidth - 100) + 50;
+                const y1 = Math.random() * (window.innerHeight / 2 - 50) + 80;
+                
+                // 生成第二个烟花的随机位置（与第一个保持距离，避免重叠）
+                let x2, y2;
+                do {
+                    x2 = Math.random() * (window.innerWidth - 100) + 50;
+                    y2 = Math.random() * (window.innerHeight / 2 - 50) + 80;
+                } while (Math.sqrt(Math.pow(x2 - x1, 2) + Math.pow(y2 - y1, 2)) < 50); // 最小间距50px
+                
+                // 按顺序取两个不同的文字
+                const text1 = textPool[textPoolIndex % textPool.length];
+                const text2 = textPool[(textPoolIndex + 1) % textPool.length];
+                
+                // 添加两个烟花（分别对应不同文字）
+                this.addFirework(x1, y1, text1);
+                this.addFirework(x2, y2, text2);
+                
+                // 索引+2，下次取后面两个文字
+                textPoolIndex += 2;
+                // 计数+2
+                autoClickCount += 2;
+            },
+            
+            update() {
+                for (let i = this.shells.length - 1; i >= 0; i--) {
+                    const shell = this.shells[i];
+                    const result = shell.update();
+                    
+                    if (result === 'explode') {
+                        const fireworkParticles = shell.generateFireworkParticles();
+                        this.particles = this.particles.concat(fireworkParticles);
+                    }
+                    
+                    if (result === 'generateText') {
+                        const textParticles = shell.generateTextParticles(shell.text);
+                        this.particles = this.particles.concat(textParticles);
+                    }
+                    
+                    if (shell.hasExploded && shell.textGenerated && shell.textParticles.every(p => !p.isAlive)) {
+                        this.shells.splice(i, 1);
+                    }
+                }
+                
+                for (let i = this.particles.length - 1; i >= 0; i--) {
+                    const particle = this.particles[i];
+                    particle.update();
+                    if (!particle.isAlive) {
+                        this.particles.splice(i, 1);
+                    }
+                }
+            },
+            
+            draw() {
+                this.particles.forEach(particle => {
+                    particle.draw();
+                });
+            }
+        };
+
+        // 随机颜色生成函数
+        function getRandomColor() {
+            const colors = ['#ff3366', '#ff9933', '#ffff66', '#33ff66', 
+            '#3399ff', '#9933ff', '#ff33cc','lightpink', 'skyblue', 
+            'lightgreen', 'lavender', 'coral', 'bisque','mistyrose','oldlace'];
+            return colors[Math.floor(Math.random() * colors.length)];
+        }
+
+        // 生成数字粒子（321倒计时，适配手机）
+        function generateNumberParticles(number) {
+            const particles = [];
+            const numStr = number.toString();
+            const fontSize = Math.min(70, window.innerWidth / 1.5); // 适配手机数字大小
+            const centerX = window.innerWidth / 2;
+            const centerY = window.innerHeight / 2;
+
+            const textWidth = fontSize * 1.1;
+            const textHeight = fontSize * 1.4;
+            const tempCanvas = document.createElement('canvas');
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCanvas.width = textWidth * devicePixelRatio;
+            tempCanvas.height = textHeight * devicePixelRatio;
+            tempCtx.scale(devicePixelRatio, devicePixelRatio);
+
+            tempCtx.font = `bold ${fontSize}px Microsoft YaHei, sans-serif`;
+            tempCtx.textAlign = 'center';
+            tempCtx.textBaseline = 'middle';
+            tempCtx.fillStyle = '#ffffff';
+            tempCtx.fillText(numStr, textWidth / 2, textHeight / 2);
+
+            const imageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+            const pixels = imageData.data;
+
+            // 手机端加大步长，减少粒子数量
+            for (let row = 0; row < tempCanvas.height; row += 3) {
+                for (let col = 0; col < tempCanvas.width; col += 3) {
+                    const index = (row * tempCanvas.width + col) * 4;
+                    const alpha = pixels[index + 3];
+                    if (alpha > 100) {
+                        const px = centerX - textWidth / 2 + col / devicePixelRatio;
+                        const py = centerY - textHeight / 2 + row / devicePixelRatio;
+                        particles.push(new Particle(
+                            centerX + (Math.random() - 0.5) * 80, // 缩小初始扩散范围
+                            centerY + (Math.random() - 0.5) * 80,
+                            getRandomColor(),
+                            'text',
+                            px,
+                            py
+                        ));
+                    }
+                }
+            }
+            return particles;
+        }
+
+        // 处理倒计时逻辑
+        function handleCountdown() {
+            if (countdownParticles.length === 0) {
+                countdownParticles = generateNumberParticles(countdownNumber);
+            }
+
+            // 更新并绘制倒计时粒子
+            for (let i = countdownParticles.length - 1; i >= 0; i--) {
+                const p = countdownParticles[i];
+                p.update();
+                p.draw();
+                if (!p.isAlive) {
+                    countdownParticles.splice(i, 1);
+                }
+            }
+
+            // 每个数字显示1秒（60帧）
+            countdownFrame++;
+            if (countdownFrame >= 60) {
+                countdownFrame = 0;
+                countdownNumber--;
+                countdownParticles = [];
+
+                // 倒计时结束，进入自动点击阶段
+                if (countdownNumber < 1) {
+                    currentState = STATE.AUTO_CLICK;
+                    startAutoClick();
+                }
+            }
+        }
+
+        // 启动自动点击燃放烟花（一次两个随机位置，文字按顺序）
+        function startAutoClick() {
+            // 递归发射下一组烟花（每组2个）
+            function launchNextFireworkGroup() {
+                // 所有烟花发射完成（总数量达到AUTO_CLICK_TOTAL）
+                if (autoClickCount >= AUTO_CLICK_TOTAL) {
+                    // 等待最后一个烟花完全爆开后，进入最终文字阶段
+                    setTimeout(() => {
+                        currentState = STATE.FINAL_TEXT;
+                        generateFinalTextParticles();
+                    }, 1800);
+                    return;
+                }
+
+                // 一次添加两个随机位置、按顺序文字的烟花
+                FireworkManager.addTwoRandomFireworks();
+
+                // 监听最后一个烟花完成状态
+                const lastShell = FireworkManager.shells[FireworkManager.shells.length - 1];
+                const checkShellComplete = setInterval(() => {
+                    if (lastShell.hasExploded && lastShell.textGenerated && lastShell.textParticles.every(p => !p.isAlive)) {
+                        clearInterval(checkShellComplete);
+                        // 每组间隔稍长，避免画面拥挤
+                        setTimeout(launchNextFireworkGroup, 800);
+                    }
+                }, 50);
+            }
+
+            // 启动第一组烟花
+            launchNextFireworkGroup();
+        }
+
+        // 生成渐变色彩的"新年快乐"粒子（适配手机）
+        function generateFinalTextParticles() {
+            finalTextParticles = [];
+            const text = '元旦快乐';
+            const fontSize = Math.min(50, window.innerWidth / 3); // 适配手机字体大小
+            const centerX = window.innerWidth / 2;
+            const centerY = window.innerHeight / 2;
+
+            // 计算文字尺寸
+            ctx.font = `bold ${fontSize}px Microsoft YaHei, sans-serif`;
+            const textMetrics = ctx.measureText(text);
+            const textWidth = textMetrics.width + 80;
+            const textHeight = fontSize + 60;
+
+            // 临时画布渲染文字
+            const tempCanvas = document.createElement('canvas');
+            const tempCtx = tempCanvas.getContext('2d');
+            tempCanvas.width = textWidth * devicePixelRatio;
+            tempCanvas.height = textHeight * devicePixelRatio;
+            tempCtx.scale(devicePixelRatio, devicePixelRatio);
+
+            tempCtx.font = `bold ${fontSize}px Microsoft YaHei, sans-serif`;
+            tempCtx.textAlign = 'center';
+            tempCtx.textBaseline = 'middle';
+            tempCtx.fillStyle = '#ffffff';
+            tempCtx.fillText(text, textWidth / 2, textHeight / 2);
+
+            // 获取像素数据生成渐变粒子
+            const imageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+            const pixels = imageData.data;
+
+            // 渐变色彩数组
+            const gradientColors = [
+                '#ff3366', '#ff9933', '#ffff66', '#33ff66', 
+                '#3399ff', '#9933ff', '#ff33cc','lightpink', 
+                'skyblue', 'lightgreen', 'lavender', 'coral'
+            ];
+
+            // 手机端加大步长，减少粒子数量
+            for (let row = 0; row < tempCanvas.height; row += 3) {
+                for (let col = 0; col < tempCanvas.width; col += 3) {
+                    const index = (row * tempCanvas.width + col) * 4;
+                    const alpha = pixels[index + 3];
+                    if (alpha > 100) {
+                        const px = centerX - textWidth / 2 + col / devicePixelRatio;
+                        const py = centerY - textHeight / 2 + row / devicePixelRatio;
+                        // 根据水平位置生成渐变颜色
+                        const colorIndex = Math.floor((col / tempCanvas.width) * gradientColors.length);
+                        const color = gradientColors[colorIndex % gradientColors.length];
+
+                        finalTextParticles.push(new Particle(
+                            centerX + (Math.random() - 0.5) * 100, // 缩小初始扩散范围
+                            centerY + (Math.random() - 0.5) * 100,
+                            color,
+                            'text',
+                            px,
+                            py
+                        ));
+                    }
+                }
+            }
+        }
+
+        // 处理最终文字显示逻辑（手机端缩短时长）
+        function handleFinalText() {
+            // 更新并绘制渐变文字粒子
+            for (let i = finalTextParticles.length - 1; i >= 0; i--) {
+                const p = finalTextParticles[i];
+                p.update();
+                p.draw();
+                if (!p.isAlive) {
+                    finalTextParticles.splice(i, 1);
+                }
+            }
+
+            // 手机端缩短显示时长（4秒）
+            finalTextFrame++;
+            if (finalTextFrame >= 240) {
+                currentState = STATE.BLACK_SCREEN;
+                // 清空画布，设置纯黑屏
+                ctx.fillStyle = '#000000';
+                ctx.fillRect(0, 0, canvas.width / devicePixelRatio, canvas.height / devicePixelRatio);
+            }
+        }
+
+        // 主动画循环
+        function animate() {
+            // 不同状态的背景处理
+            if (currentState === STATE.BLACK_SCREEN) {
+                // 黑屏状态，背景全黑
+                ctx.fillStyle = 'rgba(0, 0, 0, 1)';
+                ctx.fillRect(0, 0, canvas.width / devicePixelRatio, canvas.height / devicePixelRatio);
+            } else {
+                // 半透明背景保留拖影（手机端降低不透明度，减少绘制压力）
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+                ctx.fillRect(0, 0, canvas.width / devicePixelRatio, canvas.height / devicePixelRatio);
+            }
+
+            switch(currentState) {
+                case STATE.COUNTDOWN:
+                    handleCountdown();
+                    break;
+                case STATE.AUTO_CLICK:
+                    FireworkManager.update();
+                    FireworkManager.draw();
+                    break;
+                case STATE.FINAL_TEXT:
+                    handleFinalText();
+                    break;
+                case STATE.BLACK_SCREEN:
+                    // 黑屏状态下仍更新和绘制烟花
+                    FireworkManager.update();
+                    FireworkManager.draw();
+                    break;
+            }
+
+            requestAnimationFrame(animate);
+        }
+
+        // 黑屏阶段触摸/点击：一次发射一个烟花（随机文字）
+        function launchFirework(e) {
+            if (currentState !== STATE.BLACK_SCREEN) return;
+            
+            // 阻止默认行为（触摸时防止滚动）
+            e.preventDefault();
+            
+            // 获取点击/触摸位置
+            const rect = canvas.getBoundingClientRect();
+            let clickX, clickY;
+            if (e.type === 'touchstart') {
+                const touch = e.touches[0];
+                clickX = touch.clientX - rect.left;
+                clickY = touch.clientY - rect.top;
+            } else {
+                clickX = e.clientX - rect.left;
+                clickY = e.clientY - rect.top;
+            }
+
+            // 给点击位置加小偏移，避免位置完全固定
+            const targetX = clickX + (Math.random() - 0.5) * 20;
+            const targetY = clickY + (Math.random() - 0.5) * 15;
+
+            // 随机选取文字池中的一个文字
+            const randomText = textPool[Math.floor(Math.random() * textPool.length)];
+
+            // 一次只发射一个烟花
+            FireworkManager.addFirework(targetX, targetY, randomText);
+        }
+
+        // 绑定点击事件（兼容PC）
+        canvas.addEventListener('click', launchFirework);
+        
+        // 绑定触摸事件（手机端核心交互）
+        canvas.addEventListener('touchstart', launchFirework, { passive: false });
+
+        // 启动动画
+        animate();
+    </script>
+</body>
+</html>
